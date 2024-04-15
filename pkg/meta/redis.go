@@ -279,7 +279,12 @@ func (m *redisMeta) doInit(format *Format, force bool) error {
 		}
 		if !old.DirStats && format.DirStats {
 			// remove dir stats as they are outdated
-			err := m.rdb.Del(ctx, m.dirUsedInodesKey(), m.dirUsedSpaceKey()).Err()
+			keys := make([]string, 0, KEY_SHARDS*2)
+			var i Ino
+			for i = 0; i < KEY_SHARDS; i++ {
+				keys = append(keys, m.dirUsedInodesKey(i), m.dirUsedInodesKey(i))
+			}
+			err := m.rdb.Del(ctx, keys...).Err()
 			if err != nil {
 				return errors.Wrap(err, "remove dir stats")
 			}
@@ -602,28 +607,30 @@ func (m *redisMeta) usedSpaceKey() string {
 	return m.prefix + usedSpace
 }
 
-func (m *redisMeta) dirDataLengthKey() string {
-	return m.prefix + "dirDataLength"
+const KEY_SHARDS = 128
+
+func (m *redisMeta) dirDataLengthKey(inode Ino) string {
+	return fmt.Sprintf("%sdirDataLength%d", m.prefix, inode%KEY_SHARDS)
 }
 
-func (m *redisMeta) dirUsedSpaceKey() string {
-	return m.prefix + "dirUsedSpace"
+func (m *redisMeta) dirUsedSpaceKey(inode Ino) string {
+	return fmt.Sprintf("%sdirUsedSpace%d", m.prefix, inode%KEY_SHARDS)
 }
 
-func (m *redisMeta) dirUsedInodesKey() string {
-	return m.prefix + "dirUsedInodes"
+func (m *redisMeta) dirUsedInodesKey(inode Ino) string {
+	return fmt.Sprintf("%sdirUsedInodes%d", m.prefix, inode%KEY_SHARDS)
 }
 
-func (m *redisMeta) dirQuotaUsedSpaceKey() string {
-	return m.prefix + "dirQuotaUsedSpace"
+func (m *redisMeta) dirQuotaUsedSpaceKey(inode Ino) string {
+	return fmt.Sprintf("%sdirQuotaUsedSpace%d", m.prefix, inode%KEY_SHARDS)
 }
 
-func (m *redisMeta) dirQuotaUsedInodesKey() string {
-	return m.prefix + "dirQuotaUsedInodes"
+func (m *redisMeta) dirQuotaUsedInodesKey(inode Ino) string {
+	return fmt.Sprintf("%sdirQuotaUsedInodes%d", m.prefix, inode%KEY_SHARDS)
 }
 
-func (m *redisMeta) dirQuotaKey() string {
-	return m.prefix + "dirQuota"
+func (m *redisMeta) dirQuotaKey(inode Ino) string {
+	return fmt.Sprintf("%sdirQuota%d", m.prefix, inode%KEY_SHARDS)
 }
 
 func (m *redisMeta) totalInodesKey() string {
@@ -1330,9 +1337,9 @@ func (m *redisMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, m
 			}
 			if _type == TypeDirectory {
 				field := (*inode).String()
-				pipe.HSet(ctx, m.dirUsedInodesKey(), field, "0")
-				pipe.HSet(ctx, m.dirDataLengthKey(), field, "0")
-				pipe.HSet(ctx, m.dirUsedSpaceKey(), field, "0")
+				pipe.HSet(ctx, m.dirUsedInodesKey(*inode), field, "0")
+				pipe.HSet(ctx, m.dirDataLengthKey(*inode), field, "0")
+				pipe.HSet(ctx, m.dirUsedSpaceKey(*inode), field, "0")
 			}
 			pipe.IncrBy(ctx, m.usedSpaceKey(), align4K(0))
 			pipe.Incr(ctx, m.totalInodesKey())
@@ -1578,12 +1585,12 @@ func (m *redisMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, s
 			}
 
 			field := inode.String()
-			pipe.HDel(ctx, m.dirDataLengthKey(), field)
-			pipe.HDel(ctx, m.dirUsedSpaceKey(), field)
-			pipe.HDel(ctx, m.dirUsedInodesKey(), field)
-			pipe.HDel(ctx, m.dirQuotaKey(), field)
-			pipe.HDel(ctx, m.dirQuotaUsedSpaceKey(), field)
-			pipe.HDel(ctx, m.dirQuotaUsedInodesKey(), field)
+			pipe.HDel(ctx, m.dirDataLengthKey(inode), field)
+			pipe.HDel(ctx, m.dirUsedSpaceKey(inode), field)
+			pipe.HDel(ctx, m.dirUsedInodesKey(inode), field)
+			pipe.HDel(ctx, m.dirQuotaKey(inode), field)
+			pipe.HDel(ctx, m.dirQuotaUsedSpaceKey(inode), field)
+			pipe.HDel(ctx, m.dirQuotaUsedInodesKey(inode), field)
 			return nil
 		})
 		return err
@@ -1851,9 +1858,9 @@ func (m *redisMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentD
 					}
 					if dtyp == TypeDirectory {
 						field := dino.String()
-						pipe.HDel(ctx, m.dirQuotaKey(), field)
-						pipe.HDel(ctx, m.dirQuotaUsedSpaceKey(), field)
-						pipe.HDel(ctx, m.dirQuotaUsedInodesKey(), field)
+						pipe.HDel(ctx, m.dirQuotaKey(dino), field)
+						pipe.HDel(ctx, m.dirQuotaUsedSpaceKey(dino), field)
+						pipe.HDel(ctx, m.dirQuotaUsedInodesKey(dino), field)
 					}
 				}
 			}
@@ -2439,9 +2446,9 @@ func (m *redisMeta) doSyncDirStat(ctx Context, ino Ino) (*dirStat, syscall.Errno
 			return syscall.ENOENT
 		}
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			pipe.HSet(ctx, m.dirDataLengthKey(), field, stat.length)
-			pipe.HSet(ctx, m.dirUsedSpaceKey(), field, stat.space)
-			pipe.HSet(ctx, m.dirUsedInodesKey(), field, stat.inodes)
+			pipe.HSet(ctx, m.dirDataLengthKey(ino), field, stat.length)
+			pipe.HSet(ctx, m.dirUsedSpaceKey(ino), field, stat.space)
+			pipe.HSet(ctx, m.dirUsedInodesKey(ino), field, stat.inodes)
 			return nil
 		})
 		return err
@@ -2450,14 +2457,11 @@ func (m *redisMeta) doSyncDirStat(ctx Context, ino Ino) (*dirStat, syscall.Errno
 }
 
 func (m *redisMeta) doUpdateDirStat(ctx Context, batch map[Ino]dirStat) error {
-	spaceKey := m.dirUsedSpaceKey()
-	lengthKey := m.dirDataLengthKey()
-	inodesKey := m.dirUsedInodesKey()
 	nonexist := make(map[Ino]bool, 0)
 	statList := make([]Ino, 0, len(batch))
 	pipeline := m.rdb.Pipeline()
 	for ino := range batch {
-		pipeline.HExists(ctx, spaceKey, ino.String())
+		pipeline.HExists(ctx, m.dirUsedSpaceKey(ino), ino.String())
 		statList = append(statList, ino)
 	}
 	rets, err := pipeline.Exec(ctx)
@@ -2486,13 +2490,13 @@ func (m *redisMeta) doUpdateDirStat(ctx Context, batch map[Ino]dirStat) error {
 				}
 				stat := batch[ino]
 				if stat.length != 0 {
-					pipe.HIncrBy(ctx, lengthKey, field, stat.length)
+					pipe.HIncrBy(ctx, m.dirDataLengthKey(ino), field, stat.length)
 				}
 				if stat.space != 0 {
-					pipe.HIncrBy(ctx, spaceKey, field, stat.space)
+					pipe.HIncrBy(ctx, m.dirUsedSpaceKey(ino), field, stat.space)
 				}
 				if stat.inodes != 0 {
-					pipe.HIncrBy(ctx, inodesKey, field, stat.inodes)
+					pipe.HIncrBy(ctx, m.dirUsedInodesKey(ino), field, stat.inodes)
 				}
 			}
 			return nil
@@ -2506,15 +2510,15 @@ func (m *redisMeta) doUpdateDirStat(ctx Context, batch map[Ino]dirStat) error {
 
 func (m *redisMeta) doGetDirStat(ctx Context, ino Ino, trySync bool) (*dirStat, syscall.Errno) {
 	field := ino.String()
-	dataLength, errLength := m.rdb.HGet(ctx, m.dirDataLengthKey(), field).Int64()
+	dataLength, errLength := m.rdb.HGet(ctx, m.dirDataLengthKey(ino), field).Int64()
 	if errLength != nil && errLength != redis.Nil {
 		return nil, errno(errLength)
 	}
-	usedSpace, errSpace := m.rdb.HGet(ctx, m.dirUsedSpaceKey(), field).Int64()
+	usedSpace, errSpace := m.rdb.HGet(ctx, m.dirUsedSpaceKey(ino), field).Int64()
 	if errSpace != nil && errSpace != redis.Nil {
 		return nil, errno(errSpace)
 	}
-	usedInodes, errInodes := m.rdb.HGet(ctx, m.dirUsedInodesKey(), field).Int64()
+	usedInodes, errInodes := m.rdb.HGet(ctx, m.dirUsedInodesKey(ino), field).Int64()
 	if errInodes != nil && errSpace != redis.Nil {
 		return nil, errno(errInodes)
 	}
@@ -3364,9 +3368,9 @@ func (m *redisMeta) doRemoveXattr(ctx Context, inode Ino, name string) syscall.E
 func (m *redisMeta) doGetQuota(ctx Context, inode Ino) (*Quota, error) {
 	field := inode.String()
 	cmds, err := m.rdb.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-		pipe.HGet(ctx, m.dirQuotaKey(), field)
-		pipe.HGet(ctx, m.dirQuotaUsedSpaceKey(), field)
-		pipe.HGet(ctx, m.dirQuotaUsedInodesKey(), field)
+		pipe.HGet(ctx, m.dirQuotaKey(inode), field)
+		pipe.HGet(ctx, m.dirQuotaUsedSpaceKey(inode), field)
+		pipe.HGet(ctx, m.dirQuotaUsedInodesKey(inode), field)
 		return nil
 	})
 	if err == redis.Nil {
@@ -3395,7 +3399,7 @@ func (m *redisMeta) doSetQuota(ctx Context, inode Ino, quota *Quota) (bool, erro
 	err := m.txn(ctx, func(tx *redis.Tx) error {
 		origin := new(Quota)
 		field := inode.String()
-		buf, e := tx.HGet(ctx, m.dirQuotaKey(), field).Bytes()
+		buf, e := tx.HGet(ctx, m.dirQuotaKey(inode), field).Bytes()
 		if e == nil {
 			created = false
 			origin.MaxSpace, origin.MaxInodes = m.parseQuota(buf)
@@ -3414,12 +3418,12 @@ func (m *redisMeta) doSetQuota(ctx Context, inode Ino, quota *Quota) (bool, erro
 			origin.MaxInodes = quota.MaxInodes
 		}
 		_, e = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			pipe.HSet(ctx, m.dirQuotaKey(), field, m.packQuota(origin.MaxSpace, origin.MaxInodes))
+			pipe.HSet(ctx, m.dirQuotaKey(inode), field, m.packQuota(origin.MaxSpace, origin.MaxInodes))
 			if quota.UsedSpace >= 0 {
-				pipe.HSet(ctx, m.dirQuotaUsedSpaceKey(), field, quota.UsedSpace)
+				pipe.HSet(ctx, m.dirQuotaUsedSpaceKey(inode), field, quota.UsedSpace)
 			}
 			if quota.UsedInodes >= 0 {
-				pipe.HSet(ctx, m.dirQuotaUsedInodesKey(), field, quota.UsedInodes)
+				pipe.HSet(ctx, m.dirQuotaUsedInodesKey(inode), field, quota.UsedInodes)
 			}
 			return nil
 		})
@@ -3431,9 +3435,9 @@ func (m *redisMeta) doSetQuota(ctx Context, inode Ino, quota *Quota) (bool, erro
 func (m *redisMeta) doDelQuota(ctx Context, inode Ino) error {
 	field := inode.String()
 	_, err := m.rdb.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-		pipe.HDel(ctx, m.dirQuotaKey(), field)
-		pipe.HDel(ctx, m.dirQuotaUsedSpaceKey(), field)
-		pipe.HDel(ctx, m.dirQuotaUsedInodesKey(), field)
+		pipe.HDel(ctx, m.dirQuotaKey(inode), field)
+		pipe.HDel(ctx, m.dirQuotaUsedSpaceKey(inode), field)
+		pipe.HDel(ctx, m.dirQuotaUsedInodesKey(inode), field)
 		return nil
 	})
 	return err
@@ -3441,7 +3445,7 @@ func (m *redisMeta) doDelQuota(ctx Context, inode Ino) error {
 
 func (m *redisMeta) doLoadQuotas(ctx Context) (map[Ino]*Quota, error) {
 	quotas := make(map[Ino]*Quota)
-	return quotas, m.hscan(ctx, m.dirQuotaKey(), func(keys []string) error {
+	load_fn := func(keys []string) error {
 		for i := 0; i < len(keys); i += 2 {
 			key, val := keys[i], []byte(keys[i+1])
 			inode, err := strconv.ParseUint(key, 10, 64)
@@ -3454,11 +3458,11 @@ func (m *redisMeta) doLoadQuotas(ctx Context) (map[Ino]*Quota, error) {
 				continue
 			}
 			maxSpace, maxInodes := m.parseQuota(val)
-			usedSpace, err := m.rdb.HGet(ctx, m.dirQuotaUsedSpaceKey(), key).Int64()
+			usedSpace, err := m.rdb.HGet(ctx, m.dirQuotaUsedSpaceKey(Ino(inode)), key).Int64()
 			if err != nil && err != redis.Nil {
 				return err
 			}
-			usedInodes, err := m.rdb.HGet(ctx, m.dirQuotaUsedInodesKey(), key).Int64()
+			usedInodes, err := m.rdb.HGet(ctx, m.dirQuotaUsedInodesKey(Ino(inode)), key).Int64()
 			if err != nil && err != redis.Nil {
 				return err
 			}
@@ -3470,15 +3474,23 @@ func (m *redisMeta) doLoadQuotas(ctx Context) (map[Ino]*Quota, error) {
 			}
 		}
 		return nil
-	})
+	}
+	var shard Ino
+	for shard = 0; shard < KEY_SHARDS; shard++ {
+		err := m.hscan(ctx, m.dirQuotaKey(shard), load_fn)
+		if err != nil {
+			return quotas, err
+		}
+	}
+	return quotas, nil
 }
 
 func (m *redisMeta) doFlushQuotas(ctx Context, quotas map[Ino]*Quota) error {
 	_, err := m.rdb.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 		for ino, q := range quotas {
 			field := ino.String()
-			pipe.HIncrBy(ctx, m.dirQuotaUsedSpaceKey(), field, q.newSpace)
-			pipe.HIncrBy(ctx, m.dirQuotaUsedInodesKey(), field, q.newInodes)
+			pipe.HIncrBy(ctx, m.dirQuotaUsedSpaceKey(ino), field, q.newSpace)
+			pipe.HIncrBy(ctx, m.dirQuotaUsedInodesKey(ino), field, q.newInodes)
 		}
 		return nil
 	})
@@ -3855,19 +3867,22 @@ func (m *redisMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fas
 		}
 	}
 	quotas := make(map[Ino]*DumpedQuota)
-	for k, v := range m.rdb.HGetAll(ctx, m.dirQuotaKey()).Val() {
-		inode, err := strconv.ParseUint(k, 10, 64)
-		if err != nil {
-			logger.Warnf("parse inode: %s: %v", k, err)
-			continue
+	var shard Ino
+	for shard = 0; shard < KEY_SHARDS; shard++ {
+		for k, v := range m.rdb.HGetAll(ctx, m.dirQuotaKey(shard)).Val() {
+			inode, err := strconv.ParseUint(k, 10, 64)
+			if err != nil {
+				logger.Warnf("parse inode: %s: %v", k, err)
+				continue
+			}
+			if len(v) != 16 {
+				logger.Warnf("invalid quota string: %s", hex.EncodeToString([]byte(v)))
+				continue
+			}
+			var quota DumpedQuota
+			quota.MaxSpace, quota.MaxInodes = m.parseQuota([]byte(v))
+			quotas[Ino(inode)] = &quota
 		}
-		if len(v) != 16 {
-			logger.Warnf("invalid quota string: %s", hex.EncodeToString([]byte(v)))
-			continue
-		}
-		var quota DumpedQuota
-		quota.MaxSpace, quota.MaxInodes = m.parseQuota([]byte(v))
-		quotas[Ino(inode)] = &quota
 	}
 
 	dm := &DumpedMeta{
@@ -3989,9 +4004,9 @@ func (m *redisMeta) loadEntry(e *DumpedEntry, p redis.Pipeliner, tryExec func(),
 			p.HSet(ctx, m.entryKey(inode), dentries)
 		}
 		field := inode.String()
-		p.HSet(ctx, m.dirDataLengthKey(), field, stat.length)
-		p.HSet(ctx, m.dirUsedSpaceKey(), field, stat.space)
-		p.HSet(ctx, m.dirUsedInodesKey(), field, stat.inodes)
+		p.HSet(ctx, m.dirDataLengthKey(inode), field, stat.length)
+		p.HSet(ctx, m.dirUsedSpaceKey(inode), field, stat.space)
+		p.HSet(ctx, m.dirUsedInodesKey(inode), field, stat.inodes)
 	} else if attr.Typ == TypeSymlink {
 		symL := unescape(e.Symlink)
 		attr.Length = uint64(len(symL))
@@ -4216,10 +4231,10 @@ func (m *redisMeta) doCloneEntry(ctx Context, srcIno Ino, parent Ino, name strin
 			case TypeDirectory:
 				sfield := srcIno.String()
 				field := ino.String()
-				if v, err := tx.HGet(ctx, m.dirUsedInodesKey(), sfield).Result(); err == nil {
-					p.HSet(ctx, m.dirUsedInodesKey(), field, v)
-					p.HSet(ctx, m.dirDataLengthKey(), field, tx.HGet(ctx, m.dirDataLengthKey(), sfield).Val())
-					p.HSet(ctx, m.dirUsedSpaceKey(), field, tx.HGet(ctx, m.dirUsedSpaceKey(), sfield).Val())
+				if v, err := tx.HGet(ctx, m.dirUsedInodesKey(srcIno), sfield).Result(); err == nil {
+					p.HSet(ctx, m.dirUsedInodesKey(ino), field, v)
+					p.HSet(ctx, m.dirDataLengthKey(ino), field, tx.HGet(ctx, m.dirDataLengthKey(srcIno), sfield).Val())
+					p.HSet(ctx, m.dirUsedSpaceKey(ino), field, tx.HGet(ctx, m.dirUsedSpaceKey(srcIno), sfield).Val())
 				}
 			case TypeFile:
 				// copy chunks
@@ -4279,9 +4294,9 @@ func (m *redisMeta) doCleanupDetachedNode(ctx Context, ino Ino) syscall.Errno {
 			p.DecrBy(ctx, m.usedSpaceKey(), align4K(0))
 			p.Decr(ctx, m.totalInodesKey())
 			field := ino.String()
-			p.HDel(ctx, m.dirUsedInodesKey(), field)
-			p.HDel(ctx, m.dirDataLengthKey(), field)
-			p.HDel(ctx, m.dirUsedSpaceKey(), field)
+			p.HDel(ctx, m.dirUsedInodesKey(ino), field)
+			p.HDel(ctx, m.dirDataLengthKey(ino), field)
+			p.HDel(ctx, m.dirUsedSpaceKey(ino), field)
 			p.ZRem(ctx, m.detachedNodes(), field)
 			return nil
 		})
