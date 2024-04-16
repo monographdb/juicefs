@@ -255,7 +255,7 @@ require (
 
 replace github.com/minio/minio v0.0.0-20210206053228-97fe57bba92c => github.com/juicedata/minio v0.0.0-20240523035739-2e3d9abd6140
 
-replace github.com/hanwen/go-fuse/v2 v2.1.1-0.20210611132105-24a1dfe6b4f8 => github.com/juicedata/go-fuse/v2 v2.1.1-0.20240425033113-7c40cb5eb3e9
+replace github.com/hanwen/go-fuse/v2 v2.1.1-0.20210611132105-24a1dfe6b4f8 => /home/zhanghao/Program/juicedata/go-fuse
 
 replace github.com/dgrijalva/jwt-go v3.2.0+incompatible => github.com/golang-jwt/jwt v3.2.1+incompatible
 
@@ -268,3 +268,5 @@ replace github.com/huaweicloud/huaweicloud-sdk-go-obs v3.21.12+incompatible => g
 replace github.com/urfave/cli/v2 v2.19.3 => github.com/juicedata/cli/v2 v2.19.4-0.20230605075551-9c9c5c0dce83
 
 replace github.com/vmware/go-nfs-client v0.0.0-20190605212624-d43b92724c1b => github.com/juicedata/go-nfs-client v0.0.0-20231018052507-dbca444fa7e8
+
+replace github.com/redis/go-redis/v9 v9.0.2 => /home/zhanghao/Program/monographdb/go-redis
