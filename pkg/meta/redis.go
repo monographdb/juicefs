@@ -239,7 +239,7 @@ func newRedisMeta(driver, addr string, conf *Config) (Meta, error) {
 				}
 			}
 			rdb = redis.NewClusterClient(&copt)
-			prefix = fmt.Sprintf("{%d}", opt.DB)
+			// prefix = fmt.Sprintf("{%d}", opt.DB)
 		}
 	}
 
