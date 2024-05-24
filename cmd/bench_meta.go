@@ -75,8 +75,8 @@ type MetaBench struct {
 	dir       string
 	threads   uint
 	reqs      uint
-	purgeArgs []string
 	funcs     map[string]func(string)
+	purgeArgs []string
 	jfs       *fs.FileSystem
 }
 
@@ -167,7 +167,7 @@ func (b *MetaBench) prepare() {
 }
 
 func (b *MetaBench) run(step string) {
-	if b.jfs == nil {
+	if len(b.purgeArgs) > 0 {
 		b.dropCaches()
 	}
 	stepFunc := b.funcs[step]
@@ -217,32 +217,33 @@ func metadataBench(ctx *cli.Context) error {
 	if reqCnt == 0 || threads == 0 {
 		return os.ErrInvalid
 	}
-	var purgeArgs []string
-	if os.Getuid() != 0 {
-		purgeArgs = append(purgeArgs, "sudo")
-	}
-	switch runtime.GOOS {
-	case "darwin":
-		purgeArgs = append(purgeArgs, "purge")
-	case "linux":
-		purgeArgs = append(purgeArgs, "/bin/sh", "-c", "echo 3 > /proc/sys/vm/drop_caches")
-	default:
-		logger.Fatal("Currently only support Linux/macOS")
-	}
-	if os.Getuid() != 0 {
-		logger.Infof("Clean kernel cache may ask for root privilege...")
-	}
 	bench := MetaBench{
-		dir:       mount_point,
-		threads:   threads,
-		reqs:      reqCnt,
-		purgeArgs: purgeArgs,
-		funcs:     make(map[string]func(string)),
+		dir:     mount_point,
+		threads: threads,
+		reqs:    reqCnt,
+		funcs:   make(map[string]func(string)),
 	}
 	metaUrl := ctx.String("url")
 	if metaUrl != "" {
 		jfs := initForMdtest(ctx, "mdbench", metaUrl)
 		bench.jfs = jfs
+	} else {
+		var purgeArgs []string
+		if os.Getuid() != 0 {
+			purgeArgs = append(purgeArgs, "sudo")
+		}
+		switch runtime.GOOS {
+		case "darwin":
+			purgeArgs = append(purgeArgs, "purge")
+		case "linux":
+			purgeArgs = append(purgeArgs, "/bin/sh", "-c", "echo 3 > /proc/sys/vm/drop_caches")
+		default:
+			logger.Fatal("Currently only support Linux/macOS")
+		}
+		if os.Getuid() != 0 {
+			logger.Infof("Clean kernel cache may ask for root privilege...")
+		}
+		bench.purgeArgs = purgeArgs
 	}
 	bench.prepare()
 	logger.Infof("metadata benchmark start...")
