@@ -692,6 +692,7 @@ func (m *baseMeta) Lookup(ctx Context, parent Ino, name string, inode *Ino, attr
 		return syscall.EINVAL // bad request
 	}
 	defer m.timeit("Lookup", time.Now())
+
 	parent = m.checkRoot(parent)
 	if checkPerm {
 		if st := m.Access(ctx, parent, MODE_MASK_X, nil); st != 0 {

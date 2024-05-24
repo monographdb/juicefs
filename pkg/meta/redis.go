@@ -776,7 +776,9 @@ func (m *redisMeta) doLookup(ctx Context, parent Ino, name string, inode *Ino, a
 		var res interface{}
 		var returnedIno int64
 		var returnedAttr string
+		start := time.Now()
 		res, err = m.rdb.EvalSha(ctx, m.shaLookup, []string{entryKey, name}).Result()
+		m.timeit("Lookup_EvalSha", start)
 		if st := m.handleLuaResult("lookup", res, err, &returnedIno, &returnedAttr); st == 0 {
 			foundIno = Ino(returnedIno)
 			encodedAttr = []byte(returnedAttr)
@@ -787,6 +789,7 @@ func (m *redisMeta) doLookup(ctx Context, parent Ino, name string, inode *Ino, a
 		}
 	}
 	if foundIno == 0 || len(encodedAttr) == 0 {
+		defer m.timeit("Lookup_HGetGet", time.Now())
 		var buf []byte
 		buf, err = m.rdb.HGet(ctx, entryKey, name).Bytes()
 		if err != nil {

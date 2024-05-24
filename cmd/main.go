@@ -76,6 +76,7 @@ func Main(args []string) error {
 			cmdGateway(),
 			cmdWebDav(),
 			cmdBench(),
+			cmdMetaBench(),
 			cmdObjbench(),
 			cmdMdtest(),
 			cmdWarmup(),
