@@ -1211,9 +1211,13 @@ func (m *redisMeta) doReadlink(ctx Context, inode Ino, noatime bool) (atime int6
 }
 
 func (m *redisMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, mode, cumask uint16, path string, inode *Ino, attr *Attr) syscall.Errno {
+	defer m.timeit("doMknod", time.Now())
 	return errno(m.txn(ctx, func(tx *redis.Tx) error {
 		var pattr Attr
+		start := time.Now()
 		a, err := tx.Get(ctx, m.inodeKey(parent)).Bytes()
+		m.timeit("doMknod_Get_1", start)
+		start = time.Now()
 		if err != nil {
 			return err
 		}
@@ -1235,6 +1239,7 @@ func (m *redisMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, m
 		if err != nil && err != redis.Nil {
 			return err
 		}
+		m.timeit("doMknod_HGet_1", start)
 		var foundIno Ino
 		var foundType uint8
 		if err == nil {
@@ -1328,8 +1333,9 @@ func (m *redisMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, m
 				}
 			}
 		}
-
+		defer m.timeit("doMknod_TxPipelined", time.Now())
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			start = time.Now()
 			pipe.HSet(ctx, m.entryKey(parent), name, m.packEntry(_type, *inode))
 			if updateParent {
 				pipe.Set(ctx, m.inodeKey(parent), m.marshal(&pattr), 0)
@@ -1344,10 +1350,14 @@ func (m *redisMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, m
 				pipe.HSet(ctx, m.dirDataLengthKey(*inode), field, "0")
 				pipe.HSet(ctx, m.dirUsedSpaceKey(*inode), field, "0")
 			}
+			m.timeit("doMknod_TxPipelined_Sets", start)
+			start = time.Now()
 			pipe.IncrBy(ctx, m.usedSpaceKey(), align4K(0))
 			pipe.Incr(ctx, m.totalInodesKey())
+			m.timeit("doMknod_TxPipelined_HOT", start)
 			return nil
 		})
+
 		return err
 	}, m.inodeKey(parent), m.entryKey(parent)))
 }
