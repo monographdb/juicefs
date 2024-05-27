@@ -18,10 +18,12 @@ package cmd
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +53,10 @@ func cmdMetaBench() *cli.Command {
 		&cli.StringFlag{
 			Name:  "url",
 			Usage: "metadata engine URL",
+		},
+		&cli.PathFlag{
+			Name:  "cpuprofile",
+			Usage: "write cpu profile to file",
 		},
 	}
 	return &cli.Command{
@@ -246,6 +252,15 @@ func metadataBench(ctx *cli.Context) error {
 		bench.purgeArgs = purgeArgs
 	}
 	bench.prepare()
+	cpuprofile := ctx.Path("cpuprofile")
+	if cpuprofile != "" {
+		f, err := os.Create(cpuprofile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+	}
 	logger.Infof("metadata benchmark start...")
 	for _, step := range steps {
 		bench.run(step)
