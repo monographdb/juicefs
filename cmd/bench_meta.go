@@ -17,8 +17,10 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -211,6 +213,37 @@ func (b *MetaBench) dropCaches() {
 	}
 }
 
+func OutputMetrics(ctx *cli.Context, idx int, step string) {
+	url := ctx.String("metrics")
+	if url == "" {
+		return
+	}
+	res, err := http.Get("http://" + url + "/metrics")
+	if err != nil {
+		log.Fatal(err)
+	}
+	file, err := os.Create(fmt.Sprintf("%d-%d_%s.metric", os.Getpid(), idx, step))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(res.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "juicefs_meta_ops") {
+			continue
+		}
+		_, err = file.WriteString(line)
+		if err != nil {
+			log.Fatal(err)
+		}
+		_, err = file.WriteString("\n")
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+}
+
 func metadataBench(ctx *cli.Context) error {
 	setup(ctx, 1)
 	mount_point, err := filepath.Abs(ctx.Args().First())
@@ -262,8 +295,9 @@ func metadataBench(ctx *cli.Context) error {
 		defer pprof.StopCPUProfile()
 	}
 	logger.Infof("metadata benchmark start...")
-	for _, step := range steps {
+	for i, step := range steps {
 		bench.run(step)
+		OutputMetrics(ctx, i, step)
 	}
 	return nil
 }
