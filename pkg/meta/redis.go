@@ -1414,6 +1414,7 @@ func (m *redisMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, s
 	var opened bool
 	var newSpace, newInode int64
 	err := m.txn(ctx, func(tx *redis.Tx) error {
+		start := time.Now()
 		opened = false
 		*attr = Attr{}
 		newSpace, newInode = 0, 0
@@ -1485,7 +1486,8 @@ func (m *redisMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, s
 			logger.Warnf("no attribute for inode %d (%d, %s)", inode, parent, name)
 			trash = 0
 		}
-
+		m.timeit("doUnlink_Get", start)
+		start = time.Now()
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.HDel(ctx, m.entryKey(parent), name)
 			if updateParent {
@@ -1531,7 +1533,7 @@ func (m *redisMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, s
 			}
 			return nil
 		})
-
+		m.timeit("doUnlink_TxPipelined", start)
 		return err
 	}, m.inodeKey(parent), m.entryKey(parent))
 	if err == nil && trash == 0 {
