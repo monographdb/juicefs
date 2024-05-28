@@ -60,6 +60,10 @@ func cmdMetaBench() *cli.Command {
 			Name:  "cpuprofile",
 			Usage: "write cpu profile to file",
 		},
+		&cli.PathFlag{
+			Name:  "metric-out",
+			Usage: "output metrics information",
+		},
 	}
 	return &cli.Command{
 		Name:        "mdbench",
@@ -84,6 +88,7 @@ type MetaBench struct {
 	threads   uint
 	reqs      uint
 	funcs     map[string]func(string)
+	pid       int
 	purgeArgs []string
 	jfs       *fs.FileSystem
 }
@@ -213,16 +218,17 @@ func (b *MetaBench) dropCaches() {
 	}
 }
 
-func OutputMetrics(ctx *cli.Context, idx int, step string) {
+func (b *MetaBench) outputMetrics(ctx *cli.Context, idx int, step string) {
 	url := ctx.String("metrics")
-	if url == "" {
+	out := ctx.Path("metric-out")
+	if url == "" || out == "" {
 		return
 	}
 	res, err := http.Get("http://" + url + "/metrics")
 	if err != nil {
 		log.Fatal(err)
 	}
-	file, err := os.Create(fmt.Sprintf("%d-%d_%s.metric", os.Getpid(), idx, step))
+	file, err := os.Create(out + fmt.Sprintf("/%d-%d_%s.metric", b.pid, idx, step))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -261,6 +267,7 @@ func metadataBench(ctx *cli.Context) error {
 		threads: threads,
 		reqs:    reqCnt,
 		funcs:   make(map[string]func(string)),
+		pid:     os.Getpid(),
 	}
 	metaUrl := ctx.String("url")
 	if metaUrl != "" {
@@ -297,7 +304,7 @@ func metadataBench(ctx *cli.Context) error {
 	logger.Infof("metadata benchmark start...")
 	for i, step := range steps {
 		bench.run(step)
-		OutputMetrics(ctx, i, step)
+		bench.outputMetrics(ctx, i, step)
 	}
 	return nil
 }
