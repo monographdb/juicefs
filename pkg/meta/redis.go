@@ -279,9 +279,9 @@ func (m *redisMeta) doInit(format *Format, force bool) error {
 		}
 		if !old.DirStats && format.DirStats {
 			// remove dir stats as they are outdated
-			keys := make([]string, 0, KEY_SHARDS*2)
+			keys := make([]string, 0, kShards*2)
 			var i Ino
-			for i = 0; i < KEY_SHARDS; i++ {
+			for i = 0; i < kShards; i++ {
 				keys = append(keys, m.dirUsedInodesKey(i), m.dirUsedInodesKey(i))
 			}
 			err := m.rdb.Del(ctx, keys...).Err()
@@ -389,8 +389,35 @@ func (m *redisMeta) doNewSession(sinfo []byte, update bool) error {
 	return nil
 }
 
+func (m *redisMeta) sumCounters(keys []string) (int64, error) {
+	var sum int64
+	var vals []interface{}
+	vals, e := m.rdb.MGet(Background, keys...).Result()
+	for _, val := range vals {
+		if val != nil {
+			if v, ok := val.(string); ok {
+				n, err := strconv.ParseInt(v, 10, 64)
+				if err != nil {
+					logger.Errorf("sum counters: %v", err)
+					continue
+				}
+				sum += n
+			}
+		}
+	}
+	return sum, e
+}
+
 func (m *redisMeta) getCounter(name string) (int64, error) {
-	v, err := m.rdb.Get(Background, m.prefix+name).Int64()
+	var v int64
+	var err error
+	if name == usedSpace {
+		v, err = m.sumCounters(m.usedSpaceKeys())
+	} else if name == totalInodes {
+		v, err = m.sumCounters(m.totalInodesKeys())
+	} else {
+		v, err = m.rdb.Get(Background, m.prefix+name).Int64()
+	}
 	if err == redis.Nil {
 		err = nil
 	}
@@ -603,38 +630,54 @@ func (m *redisMeta) setting() string {
 	return m.prefix + "setting"
 }
 
-func (m *redisMeta) usedSpaceKey() string {
-	return m.prefix + usedSpace
+const kShards = 128
+
+func (m *redisMeta) usedSpaceKeys() []string {
+	keys := make([]string, kShards)
+	for i := Ino(0); i < kShards; i++ {
+		keys[i] = m.usedSpaceKey(i)
+	}
+	return keys
 }
 
-const KEY_SHARDS = 128
-
-func (m *redisMeta) dirDataLengthKey(inode Ino) string {
-	return fmt.Sprintf("%sdirDataLength%d", m.prefix, inode%KEY_SHARDS)
+func (m *redisMeta) usedSpaceKey(inode Ino) string {
+	return m.prefix + usedSpace + strconv.FormatUint(uint64(inode%kShards), 10)
 }
 
-func (m *redisMeta) dirUsedSpaceKey(inode Ino) string {
-	return fmt.Sprintf("%sdirUsedSpace%d", m.prefix, inode%KEY_SHARDS)
+func (m *redisMeta) dirDataLengthKey(i Ino) string {
+	return m.prefix + "dirDataLength" + strconv.FormatUint(uint64(i%kShards), 10)
 }
 
-func (m *redisMeta) dirUsedInodesKey(inode Ino) string {
-	return fmt.Sprintf("%sdirUsedInodes%d", m.prefix, inode%KEY_SHARDS)
+func (m *redisMeta) dirUsedSpaceKey(i Ino) string {
+	return m.prefix + "dirUsedSpace" + strconv.FormatUint(uint64(i%kShards), 10)
 }
 
-func (m *redisMeta) dirQuotaUsedSpaceKey(inode Ino) string {
-	return fmt.Sprintf("%sdirQuotaUsedSpace%d", m.prefix, inode%KEY_SHARDS)
+func (m *redisMeta) dirUsedInodesKey(i Ino) string {
+	return m.prefix + "dirUsedInodes" + strconv.FormatUint(uint64(i%kShards), 10)
 }
 
-func (m *redisMeta) dirQuotaUsedInodesKey(inode Ino) string {
-	return fmt.Sprintf("%sdirQuotaUsedInodes%d", m.prefix, inode%KEY_SHARDS)
+func (m *redisMeta) dirQuotaUsedSpaceKey(i Ino) string {
+	return m.prefix + "dirQuotaUsedSpace" + strconv.FormatUint(uint64(i%kShards), 10)
 }
 
-func (m *redisMeta) dirQuotaKey(inode Ino) string {
-	return fmt.Sprintf("%sdirQuota%d", m.prefix, inode%KEY_SHARDS)
+func (m *redisMeta) dirQuotaUsedInodesKey(i Ino) string {
+	return m.prefix + "dirQuotaUsedInodes" + strconv.FormatUint(uint64(i%kShards), 10)
 }
 
-func (m *redisMeta) totalInodesKey() string {
-	return m.prefix + totalInodes
+func (m *redisMeta) dirQuotaKey(i Ino) string {
+	return m.prefix + "dirQuota" + strconv.FormatUint(uint64(i%kShards), 10)
+}
+
+func (m *redisMeta) totalInodesKeys() []string {
+	keys := make([]string, kShards)
+	for i := Ino(0); i < kShards; i++ {
+		keys[i] = m.totalInodesKey(i)
+	}
+	return keys
+}
+
+func (m *redisMeta) totalInodesKey(i Ino) string {
+	return m.prefix + totalInodes + strconv.FormatUint(uint64(i%kShards), 10)
 }
 
 func (m *redisMeta) aclKey() string {
@@ -1044,7 +1087,7 @@ func (m *redisMeta) doTruncate(ctx Context, inode Ino, flags uint8, length uint6
 			if right > (left/ChunkSize+1)*ChunkSize && right%ChunkSize > 0 {
 				pipe.RPush(ctx, m.chunkKey(inode, uint32(right/ChunkSize)), marshalSlice(0, 0, 0, 0, uint32(right%ChunkSize)))
 			}
-			pipe.IncrBy(ctx, m.usedSpaceKey(), delta.space)
+			pipe.IncrBy(ctx, m.usedSpaceKey(inode), delta.space)
 			return nil
 		})
 		if err == nil {
@@ -1113,7 +1156,7 @@ func (m *redisMeta) doFallocate(ctx Context, inode Ino, mode uint8, off uint64, 
 					size -= l
 				}
 			}
-			pipe.IncrBy(ctx, m.usedSpaceKey(), align4K(length)-align4K(old))
+			pipe.IncrBy(ctx, m.usedSpaceKey(inode), align4K(length)-align4K(old))
 			return nil
 		})
 		if err == nil {
@@ -1214,10 +1257,7 @@ func (m *redisMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, m
 	defer m.timeit("doMknod", time.Now())
 	return errno(m.txn(ctx, func(tx *redis.Tx) error {
 		var pattr Attr
-		start := time.Now()
 		a, err := tx.Get(ctx, m.inodeKey(parent)).Bytes()
-		m.timeit("doMknod_Get_1", start)
-		start = time.Now()
 		if err != nil {
 			return err
 		}
@@ -1239,7 +1279,6 @@ func (m *redisMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, m
 		if err != nil && err != redis.Nil {
 			return err
 		}
-		m.timeit("doMknod_HGet_1", start)
 		var foundIno Ino
 		var foundType uint8
 		if err == nil {
@@ -1335,7 +1374,6 @@ func (m *redisMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, m
 		}
 		defer m.timeit("doMknod_TxPipelined", time.Now())
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			start = time.Now()
 			pipe.HSet(ctx, m.entryKey(parent), name, m.packEntry(_type, *inode))
 			if updateParent {
 				pipe.Set(ctx, m.inodeKey(parent), m.marshal(&pattr), 0)
@@ -1350,11 +1388,8 @@ func (m *redisMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, m
 				pipe.HSet(ctx, m.dirDataLengthKey(*inode), field, "0")
 				pipe.HSet(ctx, m.dirUsedSpaceKey(*inode), field, "0")
 			}
-			m.timeit("doMknod_TxPipelined_Sets", start)
-			start = time.Now()
-			pipe.IncrBy(ctx, m.usedSpaceKey(), align4K(0))
-			pipe.Incr(ctx, m.totalInodesKey())
-			m.timeit("doMknod_TxPipelined_HOT", start)
+			pipe.IncrBy(ctx, m.usedSpaceKey(*inode), align4K(0))
+			pipe.Incr(ctx, m.totalInodesKey(*inode))
 			return nil
 		})
 
@@ -1477,8 +1512,8 @@ func (m *redisMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, s
 						pipe.ZAdd(ctx, m.delfiles(), redis.Z{Score: float64(now.Unix()), Member: m.toDelete(inode, attr.Length)})
 						pipe.Del(ctx, m.inodeKey(inode))
 						newSpace, newInode = -align4K(attr.Length), -1
-						pipe.IncrBy(ctx, m.usedSpaceKey(), newSpace)
-						pipe.Decr(ctx, m.totalInodesKey())
+						pipe.IncrBy(ctx, m.usedSpaceKey(inode), newSpace)
+						pipe.Decr(ctx, m.totalInodesKey(inode))
 					}
 				case TypeSymlink:
 					pipe.Del(ctx, m.symKey(inode))
@@ -1486,8 +1521,8 @@ func (m *redisMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, s
 				default:
 					pipe.Del(ctx, m.inodeKey(inode))
 					newSpace, newInode = -align4K(0), -1
-					pipe.IncrBy(ctx, m.usedSpaceKey(), newSpace)
-					pipe.Decr(ctx, m.totalInodesKey())
+					pipe.IncrBy(ctx, m.usedSpaceKey(inode), newSpace)
+					pipe.Decr(ctx, m.totalInodesKey(inode))
 				}
 				pipe.Del(ctx, m.xattrKey(inode))
 				if attr.Parent == 0 {
@@ -1593,8 +1628,8 @@ func (m *redisMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, s
 			} else {
 				pipe.Del(ctx, m.inodeKey(inode))
 				pipe.Del(ctx, m.xattrKey(inode))
-				pipe.IncrBy(ctx, m.usedSpaceKey(), -align4K(0))
-				pipe.Decr(ctx, m.totalInodesKey())
+				pipe.IncrBy(ctx, m.usedSpaceKey(inode), -align4K(0))
+				pipe.Decr(ctx, m.totalInodesKey(inode))
 			}
 
 			field := inode.String()
@@ -1852,8 +1887,8 @@ func (m *redisMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentD
 								pipe.ZAdd(ctx, m.delfiles(), redis.Z{Score: float64(now.Unix()), Member: m.toDelete(dino, tattr.Length)})
 								pipe.Del(ctx, m.inodeKey(dino))
 								newSpace, newInode = -align4K(tattr.Length), -1
-								pipe.IncrBy(ctx, m.usedSpaceKey(), newSpace)
-								pipe.Decr(ctx, m.totalInodesKey())
+								pipe.IncrBy(ctx, m.usedSpaceKey(dino), newSpace)
+								pipe.Decr(ctx, m.totalInodesKey(dino))
 							}
 						} else {
 							if dtyp == TypeSymlink {
@@ -1861,8 +1896,8 @@ func (m *redisMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentD
 							}
 							pipe.Del(ctx, m.inodeKey(dino))
 							newSpace, newInode = -align4K(0), -1
-							pipe.IncrBy(ctx, m.usedSpaceKey(), newSpace)
-							pipe.Decr(ctx, m.totalInodesKey())
+							pipe.IncrBy(ctx, m.usedSpaceKey(dino), newSpace)
+							pipe.Decr(ctx, m.totalInodesKey(dino))
 						}
 						pipe.Del(ctx, m.xattrKey(dino))
 						if tattr.Parent == 0 {
@@ -2200,8 +2235,8 @@ func (m *redisMeta) doDeleteSustainedInode(sid uint64, inode Ino) error {
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.ZAdd(ctx, m.delfiles(), redis.Z{Score: float64(time.Now().Unix()), Member: m.toDelete(inode, attr.Length)})
 			pipe.Del(ctx, m.inodeKey(inode))
-			pipe.IncrBy(ctx, m.usedSpaceKey(), newSpace)
-			pipe.Decr(ctx, m.totalInodesKey())
+			pipe.IncrBy(ctx, m.usedSpaceKey(inode), newSpace)
+			pipe.Decr(ctx, m.totalInodesKey(inode))
 			pipe.SRem(ctx, m.sustained(sid), strconv.Itoa(int(inode)))
 			return nil
 		})
@@ -2257,7 +2292,7 @@ func (m *redisMeta) doWrite(ctx Context, inode Ino, indx uint32, off uint32, sli
 			// pipe.Incr(ctx, r.sliceKey(slice.ID, slice.Size))
 			pipe.Set(ctx, m.inodeKey(inode), m.marshal(attr), 0)
 			if delta.space > 0 {
-				pipe.IncrBy(ctx, m.usedSpaceKey(), delta.space)
+				pipe.IncrBy(ctx, m.usedSpaceKey(inode), delta.space)
 			}
 			return nil
 		})
@@ -2389,7 +2424,7 @@ func (m *redisMeta) CopyFileRange(ctx Context, fin Ino, offIn uint64, fout Ino, 
 			}
 			pipe.Set(ctx, m.inodeKey(fout), m.marshal(&attr), 0)
 			if newSpace > 0 {
-				pipe.IncrBy(ctx, m.usedSpaceKey(), newSpace)
+				pipe.IncrBy(ctx, m.usedSpaceKey(fout), newSpace)
 			}
 			return nil
 		})
@@ -3489,7 +3524,7 @@ func (m *redisMeta) doLoadQuotas(ctx Context) (map[Ino]*Quota, error) {
 		return nil
 	}
 	var shard Ino
-	for shard = 0; shard < KEY_SHARDS; shard++ {
+	for shard = 0; shard < kShards; shard++ {
 		err := m.hscan(ctx, m.dirQuotaKey(shard), load_fn)
 		if err != nil {
 			return quotas, err
@@ -3846,7 +3881,7 @@ func (m *redisMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fas
 		dels = append(dels, &DumpedDelFile{Ino(inode), length, int64(z.Score)})
 	}
 
-	names := []string{usedSpace, totalInodes, "nextinode", "nextchunk", "nextsession", "nextTrash"}
+	names := []string{"nextinode", "nextchunk", "nextsession", "nextTrash"}
 	for i := range names {
 		names[i] = m.prefix + names[i]
 	}
@@ -3857,6 +3892,8 @@ func (m *redisMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fas
 			cs[i], _ = strconv.ParseInt(r.(string), 10, 64)
 		}
 	}
+	spUsed, _ := m.sumCounters(m.usedSpaceKeys())
+	inoTotal, _ := m.sumCounters(m.totalInodesKeys())
 
 	keys, err := m.rdb.ZRange(ctx, m.allSessions(), 0, -1).Result()
 	if err != nil {
@@ -3880,9 +3917,14 @@ func (m *redisMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fas
 		}
 	}
 	quotas := make(map[Ino]*DumpedQuota)
-	var shard Ino
-	for shard = 0; shard < KEY_SHARDS; shard++ {
-		for k, v := range m.rdb.HGetAll(ctx, m.dirQuotaKey(shard)).Val() {
+	cmds, _ := m.rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		for shard := Ino(0); shard < kShards; shard++ {
+			m.rdb.HGetAll(ctx, m.dirQuotaKey(shard))
+		}
+		return nil
+	})
+	for _, cmd := range cmds {
+		for k, v := range cmd.(*redis.MapStringStringCmd).Val() {
 			inode, err := strconv.ParseUint(k, 10, 64)
 			if err != nil {
 				logger.Warnf("parse inode: %s: %v", k, err)
@@ -3901,12 +3943,12 @@ func (m *redisMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fas
 	dm := &DumpedMeta{
 		Setting: *m.getFormat(),
 		Counters: &DumpedCounters{
-			UsedSpace:   cs[0],
-			UsedInodes:  cs[1],
-			NextInode:   cs[2] + 1, // Redis nextInode/nextChunk is 1 smaller than sql/tkv
-			NextChunk:   cs[3] + 1,
-			NextSession: cs[4],
-			NextTrash:   cs[5],
+			UsedSpace:   spUsed,
+			UsedInodes:  inoTotal,
+			NextInode:   cs[0] + 1, // Redis nextInode/nextChunk is 1 smaller than sql/tkv
+			NextChunk:   cs[1] + 1,
+			NextSession: cs[2],
+			NextTrash:   cs[3],
 		},
 		Sustained: sessions,
 		DelFiles:  dels,
@@ -4056,7 +4098,7 @@ func (m *redisMeta) LoadMeta(r io.Reader) (err error) {
 			return err
 		}
 		if dbsize > 0 {
-			return fmt.Errorf("Database redis://%s is not empty", m.addr)
+			return fmt.Errorf("database redis://%s is not empty", m.addr)
 		}
 	}
 
@@ -4096,8 +4138,8 @@ func (m *redisMeta) LoadMeta(r io.Reader) (err error) {
 	format, _ := json.MarshalIndent(dm.Setting, "", "")
 	p.Set(ctx, m.setting(), format, 0)
 	cs := make(map[string]interface{})
-	cs[m.prefix+usedSpace] = counters.UsedSpace
-	cs[m.prefix+totalInodes] = counters.UsedInodes
+	cs[m.usedSpaceKey(0)] = counters.UsedSpace
+	cs[m.totalInodesKey(0)] = counters.UsedInodes
 	cs[m.prefix+"nextinode"] = counters.NextInode - 1
 	cs[m.prefix+"nextchunk"] = counters.NextChunk - 1
 	cs[m.prefix+"nextsession"] = counters.NextSession
@@ -4221,8 +4263,8 @@ func (m *redisMeta) doCloneEntry(ctx Context, srcIno Ino, parent Ino, name strin
 
 		_, err = tx.TxPipelined(ctx, func(p redis.Pipeliner) error {
 			p.Set(ctx, m.inodeKey(ino), m.marshal(&attr), 0)
-			p.IncrBy(ctx, m.usedSpaceKey(), align4K(attr.Length))
-			p.Incr(ctx, m.totalInodesKey())
+			p.IncrBy(ctx, m.usedSpaceKey(ino), align4K(attr.Length))
+			p.Incr(ctx, m.totalInodesKey(ino))
 			if len(srcXattr) > 0 {
 				p.HMSet(ctx, m.xattrKey(ino), srcXattr)
 			}
@@ -4304,8 +4346,8 @@ func (m *redisMeta) doCleanupDetachedNode(ctx Context, ino Ino) syscall.Errno {
 		_, err := tx.TxPipelined(ctx, func(p redis.Pipeliner) error {
 			p.Del(ctx, m.inodeKey(ino))
 			p.Del(ctx, m.xattrKey(ino))
-			p.DecrBy(ctx, m.usedSpaceKey(), align4K(0))
-			p.Decr(ctx, m.totalInodesKey())
+			p.DecrBy(ctx, m.usedSpaceKey(ino), align4K(0))
+			p.Decr(ctx, m.totalInodesKey(ino))
 			field := ino.String()
 			p.HDel(ctx, m.dirUsedInodesKey(ino), field)
 			p.HDel(ctx, m.dirDataLengthKey(ino), field)
