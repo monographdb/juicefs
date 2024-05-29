@@ -224,6 +224,9 @@ func (b *MetaBench) outputMetrics(ctx *cli.Context, idx int, step string) {
 	if url == "" || out == "" {
 		return
 	}
+	if err := os.MkdirAll(out, 0666); err != nil {
+		log.Fatal(err)
+	}
 	res, err := http.Get("http://" + url + "/metrics")
 	if err != nil {
 		log.Fatal(err)

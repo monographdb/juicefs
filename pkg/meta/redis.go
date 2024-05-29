@@ -44,6 +44,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/howz97/algorithm/basic/queue"
+	"github.com/howz97/algorithm/pq/heap"
 	aclAPI "github.com/juicedata/juicefs/pkg/acl"
 	"github.com/juicedata/juicefs/pkg/utils"
 	"github.com/pkg/errors"
@@ -640,32 +642,32 @@ func (m *redisMeta) usedSpaceKeys() []string {
 	return keys
 }
 
-func (m *redisMeta) usedSpaceKey(inode Ino) string {
-	return m.prefix + usedSpace + strconv.FormatUint(uint64(inode%kShards), 10)
+func (m *redisMeta) usedSpaceKey(i Ino) string {
+	return m.prefix + usedSpace + strconv.FormatUint(uint64(i)%kShards, 10)
 }
 
 func (m *redisMeta) dirDataLengthKey(i Ino) string {
-	return m.prefix + "dirDataLength" + strconv.FormatUint(uint64(i%kShards), 10)
+	return m.prefix + "dirDataLength" + strconv.FormatUint(uint64(i)%kShards, 10)
 }
 
 func (m *redisMeta) dirUsedSpaceKey(i Ino) string {
-	return m.prefix + "dirUsedSpace" + strconv.FormatUint(uint64(i%kShards), 10)
+	return m.prefix + "dirUsedSpace" + strconv.FormatUint(uint64(i)%kShards, 10)
 }
 
 func (m *redisMeta) dirUsedInodesKey(i Ino) string {
-	return m.prefix + "dirUsedInodes" + strconv.FormatUint(uint64(i%kShards), 10)
+	return m.prefix + "dirUsedInodes" + strconv.FormatUint(uint64(i)%kShards, 10)
 }
 
 func (m *redisMeta) dirQuotaUsedSpaceKey(i Ino) string {
-	return m.prefix + "dirQuotaUsedSpace" + strconv.FormatUint(uint64(i%kShards), 10)
+	return m.prefix + "dirQuotaUsedSpace" + strconv.FormatUint(uint64(i)%kShards, 10)
 }
 
 func (m *redisMeta) dirQuotaUsedInodesKey(i Ino) string {
-	return m.prefix + "dirQuotaUsedInodes" + strconv.FormatUint(uint64(i%kShards), 10)
+	return m.prefix + "dirQuotaUsedInodes" + strconv.FormatUint(uint64(i)%kShards, 10)
 }
 
 func (m *redisMeta) dirQuotaKey(i Ino) string {
-	return m.prefix + "dirQuota" + strconv.FormatUint(uint64(i%kShards), 10)
+	return m.prefix + "dirQuota" + strconv.FormatUint(uint64(i)%kShards, 10)
 }
 
 func (m *redisMeta) totalInodesKeys() []string {
@@ -677,15 +679,19 @@ func (m *redisMeta) totalInodesKeys() []string {
 }
 
 func (m *redisMeta) totalInodesKey(i Ino) string {
-	return m.prefix + totalInodes + strconv.FormatUint(uint64(i%kShards), 10)
+	return m.prefix + totalInodes + strconv.FormatUint(uint64(i)%kShards, 10)
 }
 
 func (m *redisMeta) aclKey() string {
 	return m.prefix + "acl"
 }
 
-func (m *redisMeta) delfiles() string {
-	return m.prefix + "delfiles"
+func delfiles(prefix string, i Ino) string {
+	return prefix + "delfiles" + strconv.FormatUint(uint64(i)%kShards, 10)
+}
+
+func (m *redisMeta) delfiles(i Ino) string {
+	return delfiles(m.prefix, i)
 }
 
 func (m *redisMeta) detachedNodes() string {
@@ -1414,7 +1420,6 @@ func (m *redisMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, s
 	var opened bool
 	var newSpace, newInode int64
 	err := m.txn(ctx, func(tx *redis.Tx) error {
-		start := time.Now()
 		opened = false
 		*attr = Attr{}
 		newSpace, newInode = 0, 0
@@ -1486,8 +1491,7 @@ func (m *redisMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, s
 			logger.Warnf("no attribute for inode %d (%d, %s)", inode, parent, name)
 			trash = 0
 		}
-		m.timeit("doUnlink_Get", start)
-		start = time.Now()
+		start := time.Now()
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.HDel(ctx, m.entryKey(parent), name)
 			if updateParent {
@@ -1511,7 +1515,7 @@ func (m *redisMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, s
 						pipe.Set(ctx, m.inodeKey(inode), m.marshal(attr), 0)
 						pipe.SAdd(ctx, m.sustained(m.sid), strconv.Itoa(int(inode)))
 					} else {
-						pipe.ZAdd(ctx, m.delfiles(), redis.Z{Score: float64(now.Unix()), Member: m.toDelete(inode, attr.Length)})
+						pipe.ZAdd(ctx, m.delfiles(inode), redis.Z{Score: float64(now.Unix()), Member: m.toDelete(inode, attr.Length)})
 						pipe.Del(ctx, m.inodeKey(inode))
 						newSpace, newInode = -align4K(attr.Length), -1
 						pipe.IncrBy(ctx, m.usedSpaceKey(inode), newSpace)
@@ -1886,7 +1890,7 @@ func (m *redisMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentD
 								pipe.Set(ctx, m.inodeKey(dino), m.marshal(&tattr), 0)
 								pipe.SAdd(ctx, m.sustained(m.sid), strconv.Itoa(int(dino)))
 							} else {
-								pipe.ZAdd(ctx, m.delfiles(), redis.Z{Score: float64(now.Unix()), Member: m.toDelete(dino, tattr.Length)})
+								pipe.ZAdd(ctx, m.delfiles(dino), redis.Z{Score: float64(now.Unix()), Member: m.toDelete(dino, tattr.Length)})
 								pipe.Del(ctx, m.inodeKey(dino))
 								newSpace, newInode = -align4K(tattr.Length), -1
 								pipe.IncrBy(ctx, m.usedSpaceKey(dino), newSpace)
@@ -2235,7 +2239,7 @@ func (m *redisMeta) doDeleteSustainedInode(sid uint64, inode Ino) error {
 		m.parseAttr(a, &attr)
 		newSpace = -align4K(attr.Length)
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			pipe.ZAdd(ctx, m.delfiles(), redis.Z{Score: float64(time.Now().Unix()), Member: m.toDelete(inode, attr.Length)})
+			pipe.ZAdd(ctx, m.delfiles(inode), redis.Z{Score: float64(time.Now().Unix()), Member: m.toDelete(inode, attr.Length)})
 			pipe.Del(ctx, m.inodeKey(inode))
 			pipe.IncrBy(ctx, m.usedSpaceKey(inode), newSpace)
 			pipe.Decr(ctx, m.totalInodesKey(inode))
@@ -2585,17 +2589,136 @@ func (m *redisMeta) doGetDirStat(ctx Context, ino Ino, trySync bool) (*dirStat, 
 	return nil, 0
 }
 
+type DeletedScanner struct {
+	prefix  string
+	rdb     redis.UniversalClient
+	pq      *heap.Heap[float64, DeletedShard]
+	batch   int
+	fetched int
+	maxTs   int64
+	supply  bool
+	current redis.Z
+}
+
+type DeletedShard struct {
+	sid        uint16
+	allFetched bool
+	cache      *queue.Queue[redis.Z]
+}
+
+func (ds *DeletedScanner) Init(ctx context.Context) error {
+	sCnt := (ds.batch + kShards - 1) / kShards
+	pipe := ds.rdb.Pipeline()
+	if ds.maxTs > 0 {
+		rng := &redis.ZRangeBy{Min: "-inf", Max: strconv.FormatInt(ds.maxTs, 10), Count: int64(sCnt)}
+		for s := Ino(0); s < kShards; s++ {
+			pipe.ZRangeByScoreWithScores(Background, delfiles(ds.prefix, s), rng)
+		}
+	} else {
+		for s := Ino(0); s < kShards; s++ {
+			pipe.ZRangeWithScores(Background, delfiles(ds.prefix, s), 0, int64(sCnt))
+		}
+	}
+	cmds, err := pipe.Exec(ctx)
+	if err != nil {
+		return err
+	}
+	for s, cmd := range cmds {
+		ret, err := cmd.(*redis.ZSliceCmd).Result()
+		if err != nil && err != redis.Nil {
+			return err
+		}
+		if len(ret) > 0 {
+			shard := DeletedShard{
+				sid:        uint16(s),
+				cache:      queue.QueueFrom(ret),
+				allFetched: len(ret) < sCnt,
+			}
+			ds.pq.Push(ret[0].Score, shard)
+			ds.fetched += len(ret)
+		}
+	}
+	return nil
+}
+
+func (ds *DeletedScanner) Next() error {
+	if ds.pq.Size() == 0 {
+		ds.current = redis.Z{}
+		return nil
+	}
+	shard := ds.pq.Top()
+	ds.current = shard.cache.PopFront()
+	if f := shard.cache.Peek(); f != nil {
+		ds.pq.FixTop(f.Score)
+	} else {
+		const batch = 32
+		var supply []redis.Z
+		var err error
+		if (ds.supply || ds.fetched < ds.batch) && !shard.allFetched {
+			// continue fetch from redis
+			if ds.maxTs > 0 {
+				rng := &redis.ZRangeBy{Min: "-inf", Max: strconv.FormatInt(ds.maxTs, 10), Count: batch}
+				supply, err = ds.rdb.ZRangeByScoreWithScores(Background, delfiles(ds.prefix, Ino(shard.sid)), rng).Result()
+			} else {
+				supply, err = ds.rdb.ZRangeWithScores(Background, delfiles(ds.prefix, Ino(shard.sid)), 0, batch).Result()
+			}
+		}
+		if len(supply) > 0 {
+			ds.fetched += len(supply)
+			shard.cache = queue.QueueFrom(supply)
+			shard.allFetched = len(supply) < batch
+			ds.pq.FixTop(supply[0].Score)
+		} else {
+			ds.pq.Pop()
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (ds *DeletedScanner) Current() (float64, string) {
+	if ds.current.Member == nil {
+		return 0, ""
+	}
+	return ds.current.Score, ds.current.Member.(string)
+}
+
+// scan order is not strictly preserved if supply=false
+func (m *redisMeta) ScanDeleted(ctx context.Context, batch int, ts int64, supply bool) (*DeletedScanner, error) {
+	scanner := &DeletedScanner{
+		prefix: m.prefix,
+		rdb:    m.rdb,
+		pq:     heap.New[float64, DeletedShard](kShards),
+		batch:  batch,
+		maxTs:  ts,
+		supply: supply,
+	}
+	err := scanner.Init(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return scanner, nil
+}
+
 // For now only deleted files
 func (m *redisMeta) cleanupLegacies() {
 	for {
 		utils.SleepWithJitter(time.Minute)
-		rng := &redis.ZRangeBy{Min: "-inf", Max: strconv.FormatInt(time.Now().Add(-time.Hour).Unix(), 10), Count: 1000}
-		vals, err := m.rdb.ZRangeByScore(Background, m.delfiles(), rng).Result()
+		scanner, err := m.ScanDeleted(Background, 1024, time.Now().Add(-time.Hour).Unix(), false)
 		if err != nil {
 			continue
 		}
 		var count int
-		for _, v := range vals {
+		for {
+			if err = scanner.Next(); err != nil {
+				logger.Errorf("cleanup legacies %v", err)
+			}
+			_, v := scanner.Current()
+			if v == "" {
+				break
+			}
 			ps := strings.Split(v, ":")
 			if len(ps) != 2 {
 				inode, _ := strconv.ParseUint(ps[0], 10, 64)
@@ -2615,13 +2738,25 @@ func (m *redisMeta) cleanupLegacies() {
 }
 
 func (m *redisMeta) doFindDeletedFiles(ts int64, limit int) (map[Ino]uint64, error) {
-	rng := &redis.ZRangeBy{Min: "-inf", Max: strconv.FormatInt(ts, 10), Count: int64(limit)}
-	vals, err := m.rdb.ZRangeByScore(Background, m.delfiles(), rng).Result()
+	var scanner *DeletedScanner
+	var err error
+	if limit > 0 {
+		scanner, err = m.ScanDeleted(Background, limit, ts, false)
+	} else {
+		scanner, err = m.ScanDeleted(Background, 8192, ts, true)
+	}
 	if err != nil {
 		return nil, err
 	}
-	files := make(map[Ino]uint64, len(vals))
-	for _, v := range vals {
+	files := make(map[Ino]uint64, scanner.fetched)
+	for {
+		if err = scanner.Next(); err != nil {
+			return nil, err
+		}
+		_, v := scanner.Current()
+		if v == "" {
+			break
+		}
 		ps := strings.Split(v, ":")
 		if len(ps) != 2 { // will be cleaned up as legacy
 			continue
@@ -2824,7 +2959,7 @@ func (m *redisMeta) doDeleteFileData_(inode Ino, length uint64, tracking string)
 	if tracking == "" {
 		tracking = inode.String() + ":" + strconv.FormatInt(int64(length), 10)
 	}
-	_ = m.rdb.ZRem(ctx, m.delfiles(), tracking)
+	_ = m.rdb.ZRem(ctx, m.delfiles(inode), tracking)
 }
 
 func (r *redisMeta) doCleanupDelayedSlices(edge int64) (int, error) {
@@ -3281,38 +3416,35 @@ func (m *redisMeta) scanPendingFiles(ctx Context, scan pendingFileScan) error {
 	if scan == nil {
 		return nil
 	}
-
 	visited := make(map[Ino]bool)
-	start := int64(0)
-	const batchSize = 1000
+	scanner, err := m.ScanDeleted(Background, 8192, 0, true)
+	if err != nil {
+		return err
+	}
 	for {
-		pairs, err := m.rdb.ZRangeWithScores(Background, m.delfiles(), start, start+batchSize).Result()
+		if err = scanner.Next(); err != nil {
+			return err
+		}
+		score, v := scanner.Current()
+		if v == "" {
+			break
+		}
+		ps := strings.Split(v, ":")
+		if len(ps) != 2 { // will be cleaned up as legacy
+			continue
+		}
+		inode, _ := strconv.ParseUint(ps[0], 10, 64)
+		if visited[Ino(inode)] {
+			continue
+		}
+		visited[Ino(inode)] = true
+		size, _ := strconv.ParseUint(ps[1], 10, 64)
+		clean, err := scan(Ino(inode), size, int64(score))
 		if err != nil {
 			return err
 		}
-		start += batchSize
-		for _, p := range pairs {
-			v := p.Member.(string)
-			ps := strings.Split(v, ":")
-			if len(ps) != 2 { // will be cleaned up as legacy
-				continue
-			}
-			inode, _ := strconv.ParseUint(ps[0], 10, 64)
-			if visited[Ino(inode)] {
-				continue
-			}
-			visited[Ino(inode)] = true
-			size, _ := strconv.ParseUint(ps[1], 10, 64)
-			clean, err := scan(Ino(inode), size, int64(p.Score))
-			if err != nil {
-				return err
-			}
-			if clean {
-				m.doDeleteFileData_(Ino(inode), size, v)
-			}
-		}
-		if len(pairs) < batchSize {
-			break
+		if clean {
+			m.doDeleteFileData_(Ino(inode), size, v)
 		}
 	}
 	return nil
@@ -3867,20 +3999,27 @@ func (m *redisMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fas
 		}
 	}()
 	ctx := Background
-	zs, err := m.rdb.ZRangeWithScores(ctx, m.delfiles(), 0, -1).Result()
+	scanner, err := m.ScanDeleted(ctx, 8192, 0, true)
 	if err != nil {
 		return err
 	}
-	dels := make([]*DumpedDelFile, 0, len(zs))
-	for _, z := range zs {
-		parts := strings.Split(z.Member.(string), ":")
+	dels := make([]*DumpedDelFile, 0, scanner.fetched)
+	for {
+		if err = scanner.Next(); err != nil {
+			return err
+		}
+		score, v := scanner.Current()
+		if v == "" {
+			break
+		}
+		parts := strings.Split(v, ":")
 		if len(parts) != 2 {
-			logger.Warnf("invalid delfile string: %s", z.Member.(string))
+			logger.Warnf("invalid delfile string: %s", v)
 			continue
 		}
 		inode, _ := strconv.ParseUint(parts[0], 10, 64)
 		length, _ := strconv.ParseUint(parts[1], 10, 64)
-		dels = append(dels, &DumpedDelFile{Ino(inode), length, int64(z.Score)})
+		dels = append(dels, &DumpedDelFile{Ino(inode), length, int64(score)})
 	}
 
 	names := []string{"nextinode", "nextchunk", "nextsession", "nextTrash"}
@@ -4151,19 +4290,28 @@ func (m *redisMeta) LoadMeta(r io.Reader) (err error) {
 		if l > 100 {
 			l = 100
 		}
-		zs := make([]redis.Z, 0, l)
+		var mzs [kShards][]redis.Z
+		for s := 0; s < kShards; s++ {
+			mzs[s] = make([]redis.Z, 0, l)
+		}
 		for _, d := range dm.DelFiles {
-			if len(zs) >= 100 {
-				p.ZAdd(ctx, m.delfiles(), zs...)
+			shard := d.Inode % kShards
+			zs := &mzs[shard]
+			if len(*zs) >= 100 {
+				p.ZAdd(ctx, m.delfiles(shard), *zs...)
 				tryExec()
-				zs = zs[:0]
+				*zs = (*zs)[:0]
 			}
-			zs = append(zs, redis.Z{
+			*zs = append(*zs, redis.Z{
 				Score:  float64(d.Expire),
 				Member: m.toDelete(d.Inode, d.Length),
 			})
 		}
-		p.ZAdd(ctx, m.delfiles(), zs...)
+		for shard, zs := range mzs {
+			if len(zs) > 0 {
+				p.ZAdd(ctx, m.delfiles(Ino(shard)), zs...)
+			}
+		}
 	}
 	slices := make(map[string]interface{})
 	for k, v := range refs {
