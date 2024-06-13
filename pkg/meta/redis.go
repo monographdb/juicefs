@@ -44,8 +44,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/howz97/algorithm/basic/queue"
-	"github.com/howz97/algorithm/pq/heap"
+	"github.com/howz97/algorithm/basic"
+	"github.com/howz97/algorithm/pq"
 	aclAPI "github.com/juicedata/juicefs/pkg/acl"
 	"github.com/juicedata/juicefs/pkg/utils"
 	"github.com/pkg/errors"
@@ -2592,7 +2592,7 @@ func (m *redisMeta) doGetDirStat(ctx Context, ino Ino, trySync bool) (*dirStat, 
 type DeletedScanner struct {
 	prefix  string
 	rdb     redis.UniversalClient
-	pq      *heap.Heap[float64, DeletedShard]
+	pq      *pq.Paired[float64, DeletedShard]
 	batch   int
 	fetched int
 	maxTs   int64
@@ -2603,7 +2603,7 @@ type DeletedScanner struct {
 type DeletedShard struct {
 	sid        uint16
 	allFetched bool
-	cache      *queue.Queue[redis.Z]
+	cache      *basic.Queue[redis.Z]
 }
 
 func (ds *DeletedScanner) Init(ctx context.Context) error {
@@ -2631,10 +2631,10 @@ func (ds *DeletedScanner) Init(ctx context.Context) error {
 		if len(ret) > 0 {
 			shard := DeletedShard{
 				sid:        uint16(s),
-				cache:      queue.QueueFrom(ret),
+				cache:      basic.QueueFrom(ret),
 				allFetched: len(ret) < sCnt,
 			}
-			ds.pq.Push(ret[0].Score, shard)
+			ds.pq.PushPair(ret[0].Score, shard)
 			ds.fetched += len(ret)
 		}
 	}
@@ -2665,7 +2665,7 @@ func (ds *DeletedScanner) Next() error {
 		}
 		if len(supply) > 0 {
 			ds.fetched += len(supply)
-			shard.cache = queue.QueueFrom(supply)
+			shard.cache = basic.QueueFrom(supply)
 			shard.allFetched = len(supply) < batch
 			ds.pq.FixTop(supply[0].Score)
 		} else {
@@ -2690,7 +2690,7 @@ func (m *redisMeta) ScanDeleted(ctx context.Context, batch int, ts int64, supply
 	scanner := &DeletedScanner{
 		prefix: m.prefix,
 		rdb:    m.rdb,
-		pq:     heap.New[float64, DeletedShard](kShards),
+		pq:     pq.NewPaired[float64, DeletedShard](kShards),
 		batch:  batch,
 		maxTs:  ts,
 		supply: supply,

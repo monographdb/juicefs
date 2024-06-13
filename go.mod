@@ -1,6 +1,8 @@
 module github.com/juicedata/juicefs
 
-go 1.20
+go 1.21
+
+toolchain go1.21.5
 
 require (
 	cloud.google.com/go/compute/metadata v0.2.3
@@ -30,7 +32,7 @@ require (
 	github.com/hanwen/go-fuse/v2 v2.1.1-0.20210611132105-24a1dfe6b4f8
 	github.com/hashicorp/consul/api v1.15.2
 	github.com/hashicorp/go-hclog v1.5.0
-	github.com/howz97/algorithm v0.1.1
+	github.com/howz97/algorithm v0.1.2
 	github.com/huaweicloud/huaweicloud-sdk-go-obs v3.21.12+incompatible
 	github.com/hungys/go-lz4 v0.0.0-20170805124057-19ff7f07f099
 	github.com/jackc/pgx/v5 v5.5.4
@@ -272,5 +274,3 @@ replace github.com/urfave/cli/v2 v2.19.3 => github.com/juicedata/cli/v2 v2.19.4-
 replace github.com/vmware/go-nfs-client v0.0.0-20190605212624-d43b92724c1b => github.com/juicedata/go-nfs-client v0.0.0-20231018052507-dbca444fa7e8
 
 replace github.com/redis/go-redis/v9 v9.0.2 => /home/zhanghao/Program/monographdb/go-redis
-
-// replace github.com/howz97/algorithm v0.1.1 => /home/zhanghao/Program/howz97/algorithm
