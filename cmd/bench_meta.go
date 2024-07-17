@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,9 +39,9 @@ import (
 func cmdMetaBench() *cli.Command {
 	selfFlags := []cli.Flag{
 		&cli.UintFlag{
-			Name:  "count",
+			Name:  "files",
 			Value: 100,
-			Usage: "operations per thread",
+			Usage: "files per thread",
 		},
 		&cli.UintFlag{
 			Name:  "threads",
@@ -86,7 +87,7 @@ const (
 type MetaBench struct {
 	dir       string
 	threads   uint
-	reqs      uint
+	files     uint
 	funcs     map[string]func(string)
 	pid       int
 	purgeArgs []string
@@ -179,27 +180,32 @@ func (b *MetaBench) prepare() {
 	}
 }
 
-func (b *MetaBench) run(step string) {
+func (b *MetaBench) run(step string, repeat uint) {
 	if len(b.purgeArgs) > 0 {
 		b.dropCaches()
 	}
-	stepFunc := b.funcs[step]
+	stepFunc, ok := b.funcs[step]
+	if !ok {
+		logger.Fatalf("invalid step %s", step)
+	}
 	wg := sync.WaitGroup{}
 	wg.Add(int(b.threads))
 	start := time.Now()
-	for i := uint(0); i < b.threads; i++ {
+	for tid := uint(0); tid < b.threads; tid++ {
 		go func(i uint) {
 			d := b.routine_dir(i)
-			for j := uint(0); j < b.reqs; j++ {
-				fn := b.filename(d, j)
-				stepFunc(fn)
+			for r := uint(0); r < repeat; r++ {
+				for fid := uint(0); fid < b.files; fid++ {
+					fn := b.filename(d, fid)
+					stepFunc(fn)
+				}
 			}
 			wg.Done()
-		}(i)
+		}(tid)
 	}
 	wg.Wait()
 	cost := time.Since(start)
-	total := b.threads * b.reqs
+	total := b.threads * b.files * repeat
 	ops := float64(total) / cost.Seconds()
 	logger.Infof("%s: %d operations, cost %v, OPS=%.2f", strings.ToUpper(step), total, cost, ops)
 }
@@ -260,15 +266,15 @@ func metadataBench(ctx *cli.Context) error {
 		logger.Fatalf("Failed to get absolute path of %s: %s", ctx.Args().First(), err)
 	}
 	threads := ctx.Uint("threads")
-	reqCnt := ctx.Uint("count")
+	files := ctx.Uint("files")
 	steps := ctx.StringSlice("steps")
-	if reqCnt == 0 || threads == 0 {
+	if files == 0 || threads == 0 {
 		return os.ErrInvalid
 	}
 	bench := MetaBench{
 		dir:     mount_point,
 		threads: threads,
-		reqs:    reqCnt,
+		files:   files,
 		funcs:   make(map[string]func(string)),
 		pid:     os.Getpid(),
 	}
@@ -306,7 +312,17 @@ func metadataBench(ctx *cli.Context) error {
 	}
 	logger.Infof("metadata benchmark start...")
 	for i, step := range steps {
-		bench.run(step)
+		p := strings.IndexByte(step, '*')
+		repeat := uint(1)
+		if p > 0 {
+			n, err := strconv.Atoi(step[p+1:])
+			if err != nil {
+				log.Fatal(err)
+			}
+			repeat = uint(n)
+			step = step[:p]
+		}
+		bench.run(step, repeat)
 		bench.outputMetrics(ctx, i, step)
 	}
 	return nil
