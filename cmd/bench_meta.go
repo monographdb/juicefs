@@ -50,7 +50,7 @@ func cmdMetaBench() *cli.Command {
 		},
 		&cli.StringSliceFlag{
 			Name:  "steps",
-			Value: cli.NewStringSlice(stepCreate, stepStat, stepOpen, stepRemove),
+			Value: cli.NewStringSlice(stepNames...),
 			Usage: "test suit steps",
 		},
 		&cli.StringFlag{
@@ -77,18 +77,28 @@ func cmdMetaBench() *cli.Command {
 	}
 }
 
+type StepKind uint8
+
 const (
-	stepCreate = "create"
-	stepStat   = "stat"
-	stepOpen   = "open"
-	stepRemove = "remove"
+	stepCreate StepKind = iota
+	stepStat
+	stepOpen
+	stepRemove
+	stepNum
 )
+
+var stepNames = []string{stepCreate: "create", stepStat: "stat", stepOpen: "open", stepRemove: "remove"}
+
+type Step struct {
+	kind   StepKind
+	repeat uint
+}
 
 type MetaBench struct {
 	dir       string
 	threads   uint
 	files     uint
-	funcs     map[string]func(string)
+	funcs     [stepNum]func(string)
 	pid       int
 	purgeArgs []string
 	jfs       *fs.FileSystem
@@ -180,14 +190,11 @@ func (b *MetaBench) prepare() {
 	}
 }
 
-func (b *MetaBench) run(step string, repeat uint) {
+func (b *MetaBench) run(step StepKind, repeat uint) {
 	if len(b.purgeArgs) > 0 {
 		b.dropCaches()
 	}
-	stepFunc, ok := b.funcs[step]
-	if !ok {
-		logger.Fatalf("invalid step %s", step)
-	}
+	stepFunc := b.funcs[step]
 	wg := sync.WaitGroup{}
 	wg.Add(int(b.threads))
 	start := time.Now()
@@ -207,7 +214,7 @@ func (b *MetaBench) run(step string, repeat uint) {
 	cost := time.Since(start)
 	total := b.threads * b.files * repeat
 	ops := float64(total) / cost.Seconds()
-	logger.Infof("%s: %d operations, cost %v, OPS=%.2f", strings.ToUpper(step), total, cost, ops)
+	logger.Infof("%s: %d operations, cost %v, OPS=%.2f", strings.ToUpper(stepNames[step]), total, cost, ops)
 }
 
 func (b *MetaBench) routine_dir(i uint) string {
@@ -268,7 +275,6 @@ func metadataBench(ctx *cli.Context) error {
 	}
 	threads := ctx.Uint("threads")
 	files := ctx.Uint("files")
-	steps := ctx.StringSlice("steps")
 	if files == 0 || threads == 0 {
 		return os.ErrInvalid
 	}
@@ -276,7 +282,6 @@ func metadataBench(ctx *cli.Context) error {
 		dir:     mount_point,
 		threads: threads,
 		files:   files,
-		funcs:   make(map[string]func(string)),
 		pid:     os.Getpid(),
 	}
 	metaUrl := ctx.String("url")
@@ -312,7 +317,9 @@ func metadataBench(ctx *cli.Context) error {
 		defer pprof.StopCPUProfile()
 	}
 	logger.Infof("metadata benchmark start...")
-	for i, step := range steps {
+	stepsArg := ctx.StringSlice("steps")
+	steps := make([]Step, 0, len(stepsArg))
+	for _, step := range stepsArg {
 		p := strings.IndexByte(step, '*')
 		repeat := uint(1)
 		if p > 0 {
@@ -323,8 +330,27 @@ func metadataBench(ctx *cli.Context) error {
 			repeat = uint(n)
 			step = step[:p]
 		}
-		bench.run(step, repeat)
-		bench.outputMetrics(ctx, i, step)
+		var skind StepKind
+		switch step {
+		case "create", "c":
+			skind = stepCreate
+		case "stat", "s":
+			skind = stepStat
+		case "open", "o":
+			skind = stepOpen
+		case "remove", "rm", "r", "delete", "del", "d":
+			skind = stepRemove
+		default:
+			log.Fatalf("unknown step '%s'", step)
+		}
+		steps = append(steps, Step{
+			kind:   skind,
+			repeat: repeat,
+		})
+	}
+	for i, step := range steps {
+		bench.run(step.kind, step.repeat)
+		bench.outputMetrics(ctx, i, stepNames[step.kind])
 	}
 	return nil
 }
