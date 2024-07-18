@@ -237,7 +237,8 @@ func (b *MetaBench) outputMetrics(ctx *cli.Context, idx int, step string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	file, err := os.Create(out + fmt.Sprintf("/%d-%d_%s.metric", b.pid, idx, step))
+	filename := fmt.Sprintf("%d-%d-%s", b.pid, idx, step)
+	file, err := os.Create(out + filename)
 	if err != nil {
 		log.Fatal(err)
 	}
