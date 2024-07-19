@@ -95,7 +95,6 @@ require (
 	github.com/go-resty/resty/v2 v2.11.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.52.0 // indirect
-	golang.org/x/exp v0.0.0-20220407100705-7b9b53b0aca4 // indirect
 )
 
 require (
@@ -259,7 +258,7 @@ require (
 
 replace github.com/minio/minio v0.0.0-20210206053228-97fe57bba92c => github.com/juicedata/minio v0.0.0-20240523035739-2e3d9abd6140
 
-replace github.com/hanwen/go-fuse/v2 v2.1.1-0.20210611132105-24a1dfe6b4f8 => /home/zhanghao/Program/monographdb/go-fuse
+replace github.com/hanwen/go-fuse/v2 v2.1.1-0.20210611132105-24a1dfe6b4f8 => github.com/monographdb/go-fuse/v2 v2.0.0-20240524063954-ec9d1f3a4d52
 
 replace github.com/dgrijalva/jwt-go v3.2.0+incompatible => github.com/golang-jwt/jwt v3.2.1+incompatible
 
@@ -273,4 +272,4 @@ replace github.com/urfave/cli/v2 v2.19.3 => github.com/juicedata/cli/v2 v2.19.4-
 
 replace github.com/vmware/go-nfs-client v0.0.0-20190605212624-d43b92724c1b => github.com/juicedata/go-nfs-client v0.0.0-20231018052507-dbca444fa7e8
 
-replace github.com/redis/go-redis/v9 v9.0.2 => /home/zhanghao/Program/monographdb/go-redis
+replace github.com/redis/go-redis/v9 v9.0.2 => github.com/monographdb/go-redis/v9 v9.0.2
