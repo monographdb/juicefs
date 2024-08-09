@@ -65,6 +65,10 @@ func cmdMetaBench() *cli.Command {
 			Name:  "metric-out",
 			Usage: "output metrics information",
 		},
+		&cli.BoolFlag{
+			Name:  "no-purge",
+			Usage: "skip purge system cache",
+		},
 	}
 	return &cli.Command{
 		Name:        "mdbench",
@@ -288,7 +292,7 @@ func metadataBench(ctx *cli.Context) error {
 	if metaUrl != "" {
 		jfs := initForMdtest(ctx, "mdbench", metaUrl)
 		bench.jfs = jfs
-	} else {
+	} else if !ctx.Bool("no-purge") {
 		var purgeArgs []string
 		if os.Getuid() != 0 {
 			purgeArgs = append(purgeArgs, "sudo")
