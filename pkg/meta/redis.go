@@ -281,10 +281,11 @@ func (m *redisMeta) doInit(format *Format, force bool) error {
 		}
 		if !old.DirStats && format.DirStats {
 			// remove dir stats as they are outdated
+			// FIXME: remove all dirStatKey
 			keys := make([]string, 0, kShards*2)
 			var i Ino
 			for i = 0; i < kShards; i++ {
-				keys = append(keys, m.dirUsedInodesKey(i), m.dirUsedInodesKey(i))
+				keys = append(keys, m.dirUsedInodesKey(i), m.dirUsedSpaceKey(i))
 			}
 			err := m.rdb.Del(ctx, keys...).Err()
 			if err != nil {
@@ -646,16 +647,22 @@ func (m *redisMeta) usedSpaceKey(i Ino) string {
 	return m.prefix + usedSpace + strconv.FormatUint(uint64(i)%kShards, 10)
 }
 
-func (m *redisMeta) dirDataLengthKey(i Ino) string {
-	return m.prefix + "dirDataLength" + strconv.FormatUint(uint64(i)%kShards, 10)
+const (
+	dirDataLenKey    = "dataLength"
+	dirUsedSpaceKey  = "usedSpace"
+	dirUsedInodesKey = "usedInodes"
+)
+
+func (m *redisMeta) dirStatKey(i Ino) string {
+	return m.prefix + "dirStat" + strconv.FormatUint(uint64(i), 10)
 }
 
 func (m *redisMeta) dirUsedSpaceKey(i Ino) string {
-	return m.prefix + "dirUsedSpace" + strconv.FormatUint(uint64(i)%kShards, 10)
+	return m.prefix + "dirUsedSpace" + strconv.FormatUint(uint64(i), 10)
 }
 
 func (m *redisMeta) dirUsedInodesKey(i Ino) string {
-	return m.prefix + "dirUsedInodes" + strconv.FormatUint(uint64(i)%kShards, 10)
+	return m.prefix + "dirUsedInodes" + strconv.FormatUint(uint64(i), 10)
 }
 
 func (m *redisMeta) dirQuotaUsedSpaceKey(i Ino) string {
@@ -1389,10 +1396,9 @@ func (m *redisMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, m
 				pipe.Set(ctx, m.symKey(*inode), path, 0)
 			}
 			if _type == TypeDirectory {
-				field := (*inode).String()
-				pipe.HSet(ctx, m.dirUsedInodesKey(*inode), field, "0")
-				pipe.HSet(ctx, m.dirDataLengthKey(*inode), field, "0")
-				pipe.HSet(ctx, m.dirUsedSpaceKey(*inode), field, "0")
+				pipe.HSet(ctx, m.dirStatKey(*inode), dirUsedInodesKey, "0")
+				pipe.HSet(ctx, m.dirStatKey(*inode), dirDataLenKey, "0")
+				pipe.HSet(ctx, m.dirStatKey(*inode), dirUsedSpaceKey, "0")
 			}
 			pipe.IncrBy(ctx, m.usedSpaceKey(*inode), align4K(0))
 			pipe.Incr(ctx, m.totalInodesKey(*inode))
@@ -1639,9 +1645,9 @@ func (m *redisMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, s
 			}
 
 			field := inode.String()
-			pipe.HDel(ctx, m.dirDataLengthKey(inode), field)
-			pipe.HDel(ctx, m.dirUsedSpaceKey(inode), field)
-			pipe.HDel(ctx, m.dirUsedInodesKey(inode), field)
+			pipe.HDel(ctx, m.dirStatKey(inode), dirDataLenKey)
+			pipe.HDel(ctx, m.dirStatKey(inode), dirUsedSpaceKey)
+			pipe.HDel(ctx, m.dirStatKey(inode), dirUsedInodesKey)
 			pipe.HDel(ctx, m.dirQuotaKey(inode), field)
 			pipe.HDel(ctx, m.dirQuotaUsedSpaceKey(inode), field)
 			pipe.HDel(ctx, m.dirQuotaUsedInodesKey(inode), field)
@@ -2500,9 +2506,9 @@ func (m *redisMeta) doSyncDirStat(ctx Context, ino Ino) (*dirStat, syscall.Errno
 			return syscall.ENOENT
 		}
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			pipe.HSet(ctx, m.dirDataLengthKey(ino), field, stat.length)
-			pipe.HSet(ctx, m.dirUsedSpaceKey(ino), field, stat.space)
-			pipe.HSet(ctx, m.dirUsedInodesKey(ino), field, stat.inodes)
+			pipe.HSet(ctx, m.dirStatKey(ino), dirDataLenKey, stat.length)
+			pipe.HSet(ctx, m.dirStatKey(ino), dirUsedSpaceKey, stat.space)
+			pipe.HSet(ctx, m.dirStatKey(ino), dirUsedInodesKey, stat.inodes)
 			return nil
 		})
 		return err
@@ -2515,7 +2521,7 @@ func (m *redisMeta) doUpdateDirStat(ctx Context, batch map[Ino]dirStat) error {
 	statList := make([]Ino, 0, len(batch))
 	pipeline := m.rdb.Pipeline()
 	for ino := range batch {
-		pipeline.HExists(ctx, m.dirUsedSpaceKey(ino), ino.String())
+		pipeline.Exists(ctx, m.dirStatKey(ino), dirUsedSpaceKey)
 		statList = append(statList, ino)
 	}
 	rets, err := pipeline.Exec(ctx)
@@ -2538,19 +2544,18 @@ func (m *redisMeta) doUpdateDirStat(ctx Context, batch map[Ino]dirStat) error {
 	for _, group := range m.groupBatch(batch, 1000) {
 		_, err := m.rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
 			for _, ino := range group {
-				field := ino.String()
 				if nonexist[ino] {
 					continue
 				}
 				stat := batch[ino]
 				if stat.length != 0 {
-					pipe.HIncrBy(ctx, m.dirDataLengthKey(ino), field, stat.length)
+					pipe.HIncrBy(ctx, m.dirStatKey(ino), dirDataLenKey, stat.length)
 				}
 				if stat.space != 0 {
-					pipe.HIncrBy(ctx, m.dirUsedSpaceKey(ino), field, stat.space)
+					pipe.HIncrBy(ctx, m.dirStatKey(ino), dirUsedSpaceKey, stat.space)
 				}
 				if stat.inodes != 0 {
-					pipe.HIncrBy(ctx, m.dirUsedInodesKey(ino), field, stat.inodes)
+					pipe.HIncrBy(ctx, m.dirStatKey(ino), dirUsedInodesKey, stat.inodes)
 				}
 			}
 			return nil
@@ -2563,16 +2568,15 @@ func (m *redisMeta) doUpdateDirStat(ctx Context, batch map[Ino]dirStat) error {
 }
 
 func (m *redisMeta) doGetDirStat(ctx Context, ino Ino, trySync bool) (*dirStat, syscall.Errno) {
-	field := ino.String()
-	dataLength, errLength := m.rdb.HGet(ctx, m.dirDataLengthKey(ino), field).Int64()
+	dataLength, errLength := m.rdb.HGet(ctx, m.dirStatKey(ino), dirDataLenKey).Int64()
 	if errLength != nil && errLength != redis.Nil {
 		return nil, errno(errLength)
 	}
-	usedSpace, errSpace := m.rdb.HGet(ctx, m.dirUsedSpaceKey(ino), field).Int64()
+	usedSpace, errSpace := m.rdb.HGet(ctx, m.dirStatKey(ino), dirUsedSpaceKey).Int64()
 	if errSpace != nil && errSpace != redis.Nil {
 		return nil, errno(errSpace)
 	}
-	usedInodes, errInodes := m.rdb.HGet(ctx, m.dirUsedInodesKey(ino), field).Int64()
+	usedInodes, errInodes := m.rdb.HGet(ctx, m.dirStatKey(ino), dirUsedInodesKey).Int64()
 	if errInodes != nil && errSpace != redis.Nil {
 		return nil, errno(errInodes)
 	}
@@ -4199,10 +4203,9 @@ func (m *redisMeta) loadEntry(e *DumpedEntry, p redis.Pipeliner, tryExec func(),
 		if len(dentries) > 0 {
 			p.HSet(ctx, m.entryKey(inode), dentries)
 		}
-		field := inode.String()
-		p.HSet(ctx, m.dirDataLengthKey(inode), field, stat.length)
-		p.HSet(ctx, m.dirUsedSpaceKey(inode), field, stat.space)
-		p.HSet(ctx, m.dirUsedInodesKey(inode), field, stat.inodes)
+		p.HSet(ctx, m.dirStatKey(inode), dirDataLenKey, stat.length)
+		p.HSet(ctx, m.dirStatKey(inode), dirUsedSpaceKey, stat.space)
+		p.HSet(ctx, m.dirStatKey(inode), dirUsedInodesKey, stat.inodes)
 	} else if attr.Typ == TypeSymlink {
 		symL := unescape(e.Symlink)
 		attr.Length = uint64(len(symL))
@@ -4434,12 +4437,10 @@ func (m *redisMeta) doCloneEntry(ctx Context, srcIno Ino, parent Ino, name strin
 
 			switch attr.Typ {
 			case TypeDirectory:
-				sfield := srcIno.String()
-				field := ino.String()
-				if v, err := tx.HGet(ctx, m.dirUsedInodesKey(srcIno), sfield).Result(); err == nil {
-					p.HSet(ctx, m.dirUsedInodesKey(ino), field, v)
-					p.HSet(ctx, m.dirDataLengthKey(ino), field, tx.HGet(ctx, m.dirDataLengthKey(srcIno), sfield).Val())
-					p.HSet(ctx, m.dirUsedSpaceKey(ino), field, tx.HGet(ctx, m.dirUsedSpaceKey(srcIno), sfield).Val())
+				if v, err := tx.HGet(ctx, m.dirStatKey(srcIno), dirUsedInodesKey).Result(); err == nil {
+					p.HSet(ctx, m.dirStatKey(ino), dirUsedInodesKey, v)
+					p.HSet(ctx, m.dirStatKey(ino), dirDataLenKey, tx.HGet(ctx, m.dirStatKey(srcIno), dirDataLenKey).Val())
+					p.HSet(ctx, m.dirStatKey(ino), dirUsedSpaceKey, tx.HGet(ctx, m.dirStatKey(srcIno), dirUsedSpaceKey).Val())
 				}
 			case TypeFile:
 				// copy chunks
@@ -4499,9 +4500,9 @@ func (m *redisMeta) doCleanupDetachedNode(ctx Context, ino Ino) syscall.Errno {
 			p.DecrBy(ctx, m.usedSpaceKey(ino), align4K(0))
 			p.Decr(ctx, m.totalInodesKey(ino))
 			field := ino.String()
-			p.HDel(ctx, m.dirUsedInodesKey(ino), field)
-			p.HDel(ctx, m.dirDataLengthKey(ino), field)
-			p.HDel(ctx, m.dirUsedSpaceKey(ino), field)
+			p.HDel(ctx, m.dirStatKey(ino), dirUsedInodesKey)
+			p.HDel(ctx, m.dirStatKey(ino), dirDataLenKey)
+			p.HDel(ctx, m.dirStatKey(ino), dirUsedSpaceKey)
 			p.ZRem(ctx, m.detachedNodes(), field)
 			return nil
 		})
