@@ -284,7 +284,7 @@ func (m *redisMeta) doInit(format *Format, force bool) error {
 			keys := make([]string, 0, kShards*2)
 			var i Ino
 			for i = 0; i < kShards; i++ {
-				keys = append(keys, m.dirUsedInodesKey(i), m.dirUsedInodesKey(i))
+				keys = append(keys, m.dirUsedInodesKey(i), m.dirUsedSpaceKey(i))
 			}
 			err := m.rdb.Del(ctx, keys...).Err()
 			if err != nil {
